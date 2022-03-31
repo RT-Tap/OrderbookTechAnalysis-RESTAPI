@@ -1,3 +1,4 @@
+from sre_constants import SUCCESS
 from fastapi import FastAPI, Query, Cookie, Header, Depends, HTTPException, status
 from typing import Optional # required for python <3.10
 from pydantic import BaseModel, Field # for creating schemas that are accepted
@@ -9,41 +10,20 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 import random
 from passlib.context import CryptContext
-import mysql.connector
-# import uvicorn
+from databases import Database
+import uvicorn
 # run using : uvicorn main:app --reload 
-# main: the(this) file main.py (the Python "module").
-# app: the object created inside of main.py with the line app = FastAPI().
-# --reload: make the server restart after code changes. Only use for development.
 # autocreates documentation : http://127.0.0.1:8000/docs or http://127.0.0.1:8000/redoc the generated OpenAPI fgenerated schema: http://127.0.0.1:8000/openapi.json
 
 app = FastAPI()
-# UserDB_connection = mysql.connector
-try:
-	UserDB_connection = mysql.connector.connect(
-		host="localhost",
-		user="main-worker",
-		password="t3M647xY5xVxf",
-		database='testDB'
-	) 
-except Exception as e:
-	print(f"Failed to connect to dayabase, Error: {e}")
-	exit(1)
-#----- mysql ----
-# @app.on_event("startup")
-# async def startup():
-# 	try:
-# 		global UserDB_connection
-# 		UserDB_connection = mysql.connector.connect(
-# 			host="localhost",
-# 			user="main-worker",
-# 			password="t3M647xY5xVxf",
-# 			database='testDB'
-# 		) 
-# 	except Exception as e:
-# 		print(f"Failed to connect to dayabase, Error: {e}")
-# 		exit(1)
-
+DATABASE_URL = 'mysql://main-worker:t3M647xY5xVxf@localhost:3306/testDB' #mysql://<username>:<password>@<host>:<port>/<db_name>
+database = Database(DATABASE_URL)
+@app.on_event("startup")
+async def startup():
+	await database.connect()
+@app.on_event("shutdown")
+async def shutdown():
+    await database.disconnect()
 
 # ----------CORS-----------
 # where requests can originate from
@@ -61,7 +41,6 @@ app.add_middleware(
 	allow_methods=["*"],
 	allow_headers=["*"],
 )
-# ---------------------
 
 @app.get("/orderbook/", status_code=201)
 async def getOrderbookHisotryUsingDateTime(
@@ -88,11 +67,6 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 ACCESS_TOKEN_ISSUER = 'arthurtapper.com'
 ACCESS_TOKEN_AUDIENCE = 'localhost'
-DATABASE_URL = "mariadb://localhost:3306/Users?user=main-worker&password=t3M647xY5xVxf"
-
-# engine = create_engine(DATABASE_URL)
-# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-# Base = declarative_base()
 
 credentials_exception = HTTPException(
 	status_code=status.HTTP_401_UNAUTHORIZED,
@@ -126,6 +100,7 @@ class Register(BaseModel):
 	email: str
 	password: str
 
+
 class User(BaseModel):
 	username: str
 	email: Optional[str] = None
@@ -140,6 +115,11 @@ class DBUser(User):
 	subscriptionlevel: Optional[int] = 2
 	session: Optional[str]
 
+class Register_result(BaseModel):
+	Success: bool
+	Credentials: Optional[User]
+	Reason: Optional[str]
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 password_salt_generator_context = CryptContext(schemes=["md5_crypt"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -149,14 +129,19 @@ def verify_password(plain_password, hashed_password):
 def get_password_hash(password):
 	return pwd_context.hash(password)
 
-def get_user_data(**kwargs):
-	mysqlDB_cursor = UserDB_connection.cursor(dictionary=True)
+async def get_user_data(**kwargs):
 	# user can be looked up by either username or email, username can be differenrt from email so we need to check email in username and email feild/column
 	query = f"SELECT * from Users where " + ('username=\"'+kwargs['username']+'\" or email=\"'+kwargs['username']+'\"' if 'username' in kwargs else '')+(' or ' if 'username' and 'email' in kwargs else '')+('email=\"'+kwargs['email']+'\"' if 'email' in kwargs else '')
 	print(query)
 	try:
-		mysqlDB_cursor.execute(query)
-		user = mysqlDB_cursor.fetchall()
+		#-----original---
+		# mysqlDB_cursor = UserDB_connection.cursor(dictionary=True)
+		# mysqlDB_cursor.execute(query)
+		# user = mysqlDB_cursor.fetchall()
+		#-----------
+		#database.execute(query)
+		user = await database.fetch_all(query=query)
+		print(f"type: {type(user)} \ncontents: {user}")
 		if len(user) > 1:
 			raise internal_server_error_exception
 		elif len(user) == 0:
@@ -166,17 +151,16 @@ def get_user_data(**kwargs):
 	except: #  Exception as e
 		raise
 
-def register_user(user_details: DBUser):
-	mysqlDB_cursor = UserDB_connection.cursor(dictionary=True)
+async def register_user(user_details: DBUser):
 	salt = (password_salt_generator_context.hash(str(random.uniform(0,100))))[-16:] # a random float between 0,100 gives a lot more "randomness" to our salt as we are hashing a 18 digit number which has 2^18 possibilities, then taske last 16 characters
 	query = f"INSERT INTO Users (userID, username, password, salt, email, firstName, lastName, subscriptionlevel, active) VALUES \
 			('{uuid4()}', '{user_details.username}','{get_password_hash(user_details.password + salt)}', '{salt}', '{user_details.email}', \
 			'{user_details.firstName}', '{user_details.lastName }', '{user_details.subscriptionlevel}', 1 )" # if user_details.firstname else 'N/A'  - if user_details.lastname else 'N/A'
 	print(query)
 	try:
-		mysqlDB_cursor.execute(query)
-		UserDB_connection.commit()
-		if mysqlDB_cursor.rowcount > 1:
+		inserted = await database.execute(query=query)
+		print(f"type: {type(inserted)} \ncontents: {inserted}")
+		if inserted != 1:
 			raise internal_server_error_exception
 	except Exception as e:
 		if e is not internal_server_error_exception:
@@ -203,10 +187,10 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 	return current_user
 
 # ---- token creation -------
-def authenticate_user(username: str, password: str):
+async def authenticate_user(username: str, password: str):
 	try:
-		userData = get_user_data(username=username)
-	except: # Exception as e
+		userData = await get_user_data(username=username)
+	except:
 		raise 
 	if not verify_password(password+userData.salt, userData.password):
 		return False
@@ -225,7 +209,7 @@ def create_access_token(user: User, expires_delta: Optional[datetime.timedelta] 
 
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-	user = authenticate_user(form_data.username, form_data.password)
+	user = await authenticate_user(form_data.username, form_data.password)
 	if not user:
 		raise HTTPException(
 			status_code=status.HTTP_401_UNAUTHORIZED,
@@ -245,16 +229,16 @@ async def read_own_items(current_user: User = Depends(get_current_active_user)):
 	return [{"item_id": "Foo", "owner": current_user.username}]
 
 
-@app.post('/register/')
+@app.post('/register/', response_model=Register_result)
 async def register(registerCredentials: Register): #,  auth: str = Cookie(None), creds: str = Header(None) 
 	# user_details = DBUser(**registerCredentials)
 	username = registerCredentials.username if registerCredentials.username else  registerCredentials.email
 	user_details = DBUser(username=username, email=registerCredentials.email, password=registerCredentials.password)
-	if not get_user_data(username = user_details.username, email = user_details.email):
-		credentials = register_user(user_details)
+	if not await get_user_data(username = user_details.username, email = user_details.email):
+		credentials = await register_user(user_details)
 	else:
-		return {"Success":False, "Reason": "Username/email already exists"}
+		return Register_result(Success=False, Reason="Username/Email already exists")
 	return {"Success":True, 'Credentials': credentials}
 
-# if __name__ == "__main__":
-#     uvicorn.run(app, host="0.0.0.0", port=8000)
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
