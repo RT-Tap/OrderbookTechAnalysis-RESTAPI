@@ -66,7 +66,7 @@ SECRET_KEY = "44dd261c7263490a38edfe289e54a0e6b52f7363af5e19fe446495a8f1a32aaf" 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 ACCESS_TOKEN_ISSUER = 'arthurtapper.com'
-ACCESS_TOKEN_AUDIENCE = 'localhost'
+ACCESS_TOKEN_AUDIENCE = '127.0.0.1'
 
 credentials_exception = HTTPException(
 	status_code=status.HTTP_401_UNAUTHORIZED,
@@ -160,7 +160,7 @@ async def register_user(user_details: DBUser):
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
 	try:
-		payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_signature": True, "verify_aud": False, "exp": True})
+		payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_signature": True, "verify_aud": True, "exp": True})
 		username: str = payload.get("usr")
 		if username is None:
 			raise credentials_exception
@@ -186,7 +186,7 @@ async def authenticate_user(username: str, password: str):
 		return False
 	return userData
 
-def create_access_token(user: User, expires_delta: Optional[datetime.timedelta] = None, token_audience: Optional[str] = ACCESS_TOKEN_ISSUER):
+def create_access_token(user: User, expires_delta: Optional[datetime.timedelta] = None, token_audience: Optional[str] = ACCESS_TOKEN_AUDIENCE):
 	to_encode = {"usr": user.username, 'iss': ACCESS_TOKEN_ISSUER, 'iat': datetime.datetime.utcnow(), 'aud': token_audience, 'jti': str(uuid4()) } # fucking Jose breaks down for fucking rerason
 	if expires_delta:
 		expire = datetime.datetime.utcnow() + expires_delta
