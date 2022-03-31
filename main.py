@@ -16,14 +16,14 @@ import uvicorn
 # autocreates documentation : http://127.0.0.1:8000/docs or http://127.0.0.1:8000/redoc the generated OpenAPI fgenerated schema: http://127.0.0.1:8000/openapi.json
 
 app = FastAPI()
-DATABASE_URL = 'mysql://main-worker:t3M647xY5xVxf@localhost:3306/testDB' #mysql://<username>:<password>@<host>:<port>/<db_name>
-database = Database(DATABASE_URL)
+USER_DATABASE_URL = 'mysql://main-worker:t3M647xY5xVxf@localhost:3306/testDB' #mysql://<username>:<password>@<host>:<port>/<db_name>
+user_database = Database(USER_DATABASE_URL)
 @app.on_event("startup")
 async def startup():
-	await database.connect()
+	await user_database.connect()
 @app.on_event("shutdown")
 async def shutdown():
-    await database.disconnect()
+    await user_database.disconnect()
 
 # ----------CORS-----------
 # where requests can originate from
@@ -132,16 +132,8 @@ def get_password_hash(password):
 async def get_user_data(**kwargs):
 	# user can be looked up by either username or email, username can be differenrt from email so we need to check email in username and email feild/column
 	query = f"SELECT * from Users where " + ('username=\"'+kwargs['username']+'\" or email=\"'+kwargs['username']+'\"' if 'username' in kwargs else '')+(' or ' if 'username' and 'email' in kwargs else '')+('email=\"'+kwargs['email']+'\"' if 'email' in kwargs else '')
-	print(query)
 	try:
-		#-----original---
-		# mysqlDB_cursor = UserDB_connection.cursor(dictionary=True)
-		# mysqlDB_cursor.execute(query)
-		# user = mysqlDB_cursor.fetchall()
-		#-----------
-		#database.execute(query)
-		user = await database.fetch_all(query=query)
-		print(f"type: {type(user)} \ncontents: {user}")
+		user = await user_database.fetch_all(query=query)
 		if len(user) > 1:
 			raise internal_server_error_exception
 		elif len(user) == 0:
@@ -156,10 +148,8 @@ async def register_user(user_details: DBUser):
 	query = f"INSERT INTO Users (userID, username, password, salt, email, firstName, lastName, subscriptionlevel, active) VALUES \
 			('{uuid4()}', '{user_details.username}','{get_password_hash(user_details.password + salt)}', '{salt}', '{user_details.email}', \
 			'{user_details.firstName}', '{user_details.lastName }', '{user_details.subscriptionlevel}', 1 )" # if user_details.firstname else 'N/A'  - if user_details.lastname else 'N/A'
-	print(query)
 	try:
-		inserted = await database.execute(query=query)
-		print(f"type: {type(inserted)} \ncontents: {inserted}")
+		inserted = await user_database.execute(query=query)
 		if inserted != 1:
 			raise internal_server_error_exception
 	except Exception as e:
@@ -178,7 +168,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 	except JWTError as e:
 		print(f'jwterror: {e}')
 		raise credentials_exception
-	user = get_user_data( username=token_data.username )
+	user = await get_user_data( username=token_data.username )
 	return user
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)):
