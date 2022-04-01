@@ -1,18 +1,20 @@
-from sre_constants import SUCCESS
-from fastapi import FastAPI, Query, Cookie, Header, Depends, HTTPException, status
-from typing import Optional # required for python <3.10
+# from urllib import response
+from fastapi import FastAPI, Query, Cookie, Header, Depends, HTTPException, status, Response
+from fastapi.responses import JSONResponse
+from typing import List, Optional # required for python <3.10
 from pydantic import BaseModel, Field # for creating schemas that are accepted
 import time
 import datetime
 from uuid import  uuid4
-from fastapi.middleware.cors import CORSMiddleware # that pesky CORS 
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware # that pesky CORS
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, APIKeyHeader, HTTPBearer
 from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError
 import random
 from passlib.context import CryptContext
 from databases import Database
 import uvicorn
-# run using : uvicorn main:app --reload 
+# run using : uvicorn main:app --reload
 # autocreates documentation : http://127.0.0.1:8000/docs or http://127.0.0.1:8000/redoc the generated OpenAPI fgenerated schema: http://127.0.0.1:8000/openapi.json
 
 app = FastAPI()
@@ -23,7 +25,7 @@ async def startup():
 	await user_database.connect()
 @app.on_event("shutdown")
 async def shutdown():
-    await user_database.disconnect()
+	await user_database.disconnect()
 
 # ----------CORS-----------
 # where requests can originate from
@@ -61,12 +63,13 @@ async def getOrderHistory(
 	return {"startTime": startTime, 'endTime': endTime}
 
 
-#-------------------------------------Full JWT implementation 
+#-------------------------------------Full JWT implementation
 SECRET_KEY = "44dd261c7263490a38edfe289e54a0e6b52f7363af5e19fe446495a8f1a32aaf" # openssl rand -hex 32
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
-ACCESS_TOKEN_ISSUER = 'arthurtapper.com'
-ACCESS_TOKEN_AUDIENCE = '127.0.0.1'
+ACCESS_TOKEN_ISSUER = '127.0.0.1:8000'
+ACCESS_TOKEN_AUDIENCE = 'SOMEFUCVKER'
+LONGLASTING_REFRESH_TOKEN_EXPIRE_HOURS = 720
 
 credentials_exception = HTTPException(
 	status_code=status.HTTP_401_UNAUTHORIZED,
@@ -80,6 +83,11 @@ internal_server_error_exception = HTTPException(
 	headers={"WWW-Authenticate": "Bearer"},
 )
 
+incorrect_credentials_exception = HTTPException(
+	status_code=status.HTTP_401_UNAUTHORIZED,
+	detail="Incorrect username or password",
+	headers={"WWW-Authenticate": "Bearer"},
+)
 
 
 # response model of get_token endpoint
@@ -123,6 +131,7 @@ class Register_result(BaseModel):
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 password_salt_generator_context = CryptContext(schemes=["md5_crypt"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# http_bearer_scheme = HTTPBearer(bearerFormat=)
 
 def verify_password(plain_password, hashed_password):
 	return pwd_context.verify(plain_password, hashed_password)
@@ -160,7 +169,7 @@ async def register_user(user_details: DBUser):
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
 	try:
-		payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_signature": True, "verify_aud": True, "exp": True})
+		payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], audience=ACCESS_TOKEN_AUDIENCE, options={"verify_signature": True, "verify_aud": True, "exp": True})
 		username: str = payload.get("usr")
 		if username is None:
 			raise credentials_exception
@@ -176,12 +185,24 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
 		raise HTTPException(status_code=400, detail="Inactive user")
 	return current_user
 
+# ---- verify refresh token --
+def verifyrefresh_getaccesstoken(token: str, token_audience: Optional[str] = ACCESS_TOKEN_AUDIENCE):
+	try:
+		payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], audience='access_token_endpoint', options={"verify_signature": True, "verify_aud": True, "exp": True})
+	except:
+		raise credentials_exception
+	to_encode = {"usr": payload.get('usr'), 'iss': ACCESS_TOKEN_ISSUER, 'iat': datetime.datetime.utcnow(), 'aud': token_audience, 'jti': payload.get('jti'), 'exp':datetime.datetime.utcnow() + datetime.timedelta(seconds=30) }
+	return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
 # ---- token creation -------
 async def authenticate_user(username: str, password: str):
 	try:
 		userData = await get_user_data(username=username)
+		if not userData:
+			raise incorrect_credentials_exception
 	except:
-		raise 
+		raise
 	if not verify_password(password+userData.salt, userData.password):
 		return False
 	return userData
@@ -196,16 +217,12 @@ def create_access_token(user: User, expires_delta: Optional[datetime.timedelta] 
 	encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 	return encoded_jwt
 # -------------------------
-
-@app.post("/token", response_model=Token)
+#--------- Original/Simple JWT ---------------
+@app.post("/token", response_model=Token, summary="Get JWT token for use with some endpoints")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
 	user = await authenticate_user(form_data.username, form_data.password)
 	if not user:
-		raise HTTPException(
-			status_code=status.HTTP_401_UNAUTHORIZED,
-			detail="Incorrect username or password",
-			headers={"WWW-Authenticate": "Bearer"},
-		)
+		raise incorrect_credentials_exception
 	access_token_expires = datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 	access_token = create_access_token( user=user ,expires_delta=access_token_expires )
 	return {"access_token": access_token, "token_type": "bearer"}
@@ -217,10 +234,56 @@ async def read_users_me(current_user: User = Depends(get_current_active_user)):
 @app.get("/users/me/items/")
 async def read_own_items(current_user: User = Depends(get_current_active_user)):
 	return [{"item_id": "Foo", "owner": current_user.username}]
+# --------------------------------------
+# -----------NEW security schema -------
+# JWT issues: if stored as cookie : vulnerable to CSRF , if stored in local storage vlernable to XSS - (httpOnly cookie is only vulnerable to CSRF, regular cookie is susceptible to both)
+# 1) login: get refresh token, this will be used to get an access token anytime any operation is requested by user
+# this works because although an attacker may send a request on your behalf via CSRF because they have your cookie it will only return an access token which only you can see/read and therefore use
+# this access token is then used to perform the action but is extremely short lived in case it has been comprimised by XSS it is only valid liong enough to perform the requested action
+# this will not protect against social engineerring XSS attacks but will prevent using stored credentials
+#-----login endpoint for long term "refresh" token
+@app.post("/login", summary="Login for long lasting JWT cookie")
+async def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends()):
+	user = await authenticate_user(form_data.username, form_data.password)
+	if not user:
+		raise incorrect_credentials_exception
+	access_token_expires = datetime.timedelta(hours=LONGLASTING_REFRESH_TOKEN_EXPIRE_HOURS)
+	access_token = create_access_token( user=user , expires_delta=access_token_expires, token_audience='access_token_endpoint' )
+	content = {'Success':True }
+	response = JSONResponse(content=content)
+	response.set_cookie(key='auth_token', value=access_token, secure=True, httponly=True, max_age=2678400, path='/get_access') # secure httponly cookie that only works on /get_acces enpoint and is valid for 31 days # , path='/get_access'
+	# thereturn = Register_result(Success=True, Credentials=User(username=user.username, email=user.email, active=user.active))
+	return response
+#----"Access" JWToken endpoint - validates long term and creates short term ----
+@app.get('/get_access', response_model=Token, summary="Short lived access token used for calls")
+async def get_access_token(auth_token: str = Cookie(None)): #Optional[str]
+	try:
+		print(f'cookie: {auth_token}')
+	except:
+		print('couldnt print cookie')
+	if not auth_token:
+		print('no cookie')
+		raise credentials_exception
+	access_token = verifyrefresh_getaccesstoken(auth_token)
+	return {"access_token": access_token, "token_type": "bearer"}
+#---test endpont for the short term JWToken----
+@app.get('/test')
+async def access_token_test(access_token: Optional[str] = Header(None)):
+	if not access_token:
+		print('no header')
+		raise credentials_exception
+	try:
+		jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM], audience=ACCESS_TOKEN_AUDIENCE, options={"verify_signature": True, "verify_aud": True, "exp": True})
+	except Exception as e:
+		if e is ExpiredSignatureError:
+			print('expired')
+		raise credentials_exception
+	return {'Success': True}
+
 
 
 @app.post('/register/', response_model=Register_result)
-async def register(registerCredentials: Register): #,  auth: str = Cookie(None), creds: str = Header(None) 
+async def register(registerCredentials: Register): #,  auth: str = Cookie(None), creds: str = Header(None)
 	# user_details = DBUser(**registerCredentials)
 	username = registerCredentials.username if registerCredentials.username else  registerCredentials.email
 	user_details = DBUser(username=username, email=registerCredentials.email, password=registerCredentials.password)
@@ -231,4 +294,4 @@ async def register(registerCredentials: Register): #,  auth: str = Cookie(None),
 	return {"Success":True, 'Credentials': credentials}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+	uvicorn.run(app, host="0.0.0.0", port=8000)
