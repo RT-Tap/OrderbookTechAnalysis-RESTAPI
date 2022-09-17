@@ -22,7 +22,12 @@ USER_DATABASE_URL = 'mysql://main-worker:t3M647xY5xVxf@localhost:3306/testDB' #m
 user_database = Database(USER_DATABASE_URL)
 @app.on_event("startup")
 async def startup():
-	await user_database.connect()
+	print('conecting to users database...')
+	try:
+		await user_database.connect()
+	except Exception as e:
+		print(f'Could not connect to database.\n{e}')
+	print('connected to users database.')
 @app.on_event("shutdown")
 async def shutdown():
 	await user_database.disconnect()
