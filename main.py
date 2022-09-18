@@ -14,11 +14,13 @@ import random
 from passlib.context import CryptContext
 from databases import Database
 import uvicorn
+import os
 # run using : uvicorn main:app --reload
 # autocreates documentation : http://127.0.0.1:8000/docs or http://127.0.0.1:8000/redoc the generated OpenAPI fgenerated schema: http://127.0.0.1:8000/openapi.json
 
 app = FastAPI()
-USER_DATABASE_URL = 'mysql://main-worker:t3M647xY5xVxf@localhost:3306/testDB' #mysql://<username>:<password>@<host>:<port>/<db_name>
+# if(os.getenv('MYSQL_PASSWORD') is None): raise Exception("No password provided")
+USER_DATABASE_URL = 'mysql://'+ os.getenv('MYSQL_USER', 'main-worker') + ':' + os.getenv('MYSQL_PASSWORD') + '@localhost:3306/orderbooktechanal' #mysql://<username>:<password>@<host>:<port>/<db_name>
 user_database = Database(USER_DATABASE_URL)
 @app.on_event("startup")
 async def startup():
@@ -34,13 +36,7 @@ async def shutdown():
 
 # ----------CORS-----------
 # where requests can originate from
-origins = [
-	'http://localhost:8000',
-	'https://localhost:8000',
-	'http://arthurtapper.com',
-	'https://arthurtapper.com',
-	'http://*.arthurtapper.com'
-]
+origins = [ 'http://localhost:8000','https://localhost:8000'] if os.getenv('FQDOMAIN') is None else ['http://'+os.getenv('FQDOMAIN'), 'https://'+os.getenv('FQDOMAIN')]
 app.add_middleware(
 	CORSMiddleware,
 	allow_origins=origins,
@@ -69,11 +65,11 @@ async def getOrderHistory(
 
 
 #-------------------------------------Full JWT implementation
-SECRET_KEY = "44dd261c7263490a38edfe289e54a0e6b52f7363af5e19fe446495a8f1a32aaf" # openssl rand -hex 32
+SECRET_KEY = os.getenv('SECRET_KEY',"44dd261c7263490a38edfe289e54a0e6b52f7363af5e19fe446495a8f1a32aaf") # openssl rand -hex 32
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
-ACCESS_TOKEN_ISSUER = '127.0.0.1:8000'
-ACCESS_TOKEN_AUDIENCE = 'SOMEFUCVKER'
+ACCESS_TOKEN_ISSUER =  os.getenv('FQDOMAIN', '127.0.0.1:8000')
+ACCESS_TOKEN_AUDIENCE = 'WALLSTREETBETSAPESSITTINGATBLOOMBERGTERMINALS'
 LONGLASTING_REFRESH_TOKEN_EXPIRE_HOURS = 720
 
 credentials_exception = HTTPException(
@@ -154,7 +150,7 @@ async def get_user_data(**kwargs):
 			return None
 		else:
 			return DBUser(**user[0])
-	except: #  Exception as e
+	except:
 		raise
 
 async def register_user(user_details: DBUser):
@@ -222,7 +218,7 @@ def create_access_token(user: User, expires_delta: Optional[datetime.timedelta] 
 	encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 	return encoded_jwt
 # -------------------------
-#--------- Original/Simple JWT ---------------
+#--------- Original/Simple JWT (for refrence) ---------------
 @app.post("/token", response_model=Token, summary="Get JWT token for use with some endpoints")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
 	user = await authenticate_user(form_data.username, form_data.password)
