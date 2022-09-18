@@ -227,11 +227,7 @@ def create_access_token(user: User, expires_delta: Optional[datetime.timedelta] 
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
 	user = await authenticate_user(form_data.username, form_data.password)
 	if not user:
-<<<<<<< HEAD
-		raise 
-=======
 		raise incorrect_credentials_exception
->>>>>>> 19fc8a2 (new refres/access JWToken security schema seems to be working well)
 	access_token_expires = datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 	access_token = create_access_token( user=user ,expires_delta=access_token_expires )
 	return {"access_token": access_token, "token_type": "bearer"}
