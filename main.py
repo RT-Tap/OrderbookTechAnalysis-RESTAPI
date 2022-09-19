@@ -15,13 +15,28 @@ from passlib.context import CryptContext
 from databases import Database
 import uvicorn
 import os
-# run using : uvicorn main:app --reload
-# autocreates documentation : http://127.0.0.1:8000/docs or http://127.0.0.1:8000/redoc the generated OpenAPI fgenerated schema: http://127.0.0.1:8000/openapi.json
+from pymongo import MongoClient
+from enum import Enum
+
 
 app = FastAPI()
-# if(os.getenv('MYSQL_PASSWORD') is None): raise Exception("No password provided")
+
 USER_DATABASE_URL = 'mysql://'+ os.getenv('MYSQL_USER', 'main-worker') + ':' + os.getenv('MYSQL_PASSWORD') + '@localhost:3306/orderbooktechanal' #mysql://<username>:<password>@<host>:<port>/<db_name>
 user_database = Database(USER_DATABASE_URL)
+
+mongoDBserver = os.getenv('MONGODB_ENDPOINT','182.16.0.3:27017')
+mongoDBdatabase = os.getenv("MONGODB_DATABASE", 'orderbook&trades')
+client = None
+DBConn = None
+
+# Used for fastAPI self-documentaion purposes of available securities
+class Security(str, Enum):
+	BTC: "bitcoin"
+	ETH: "ethereum"
+	XRP: "ripple"
+	# list any other securities that you plan to make available
+
+
 @app.on_event("startup")
 async def startup():
 	print('conecting to users database...')
@@ -29,10 +44,17 @@ async def startup():
 		await user_database.connect()
 	except Exception as e:
 		print(f'Could not connect to database.\n{e}')
-	print('connected to users database.')
+	print('Successfully connected to users database.')
+	try:
+		client = MongoClient(mongoDBserver, username=os.getenv('WORKER_USERNAME', 'mainworker'), password=os.getenv('WORKER_PASSWORD'), authSource=mongoDBdatabase, authMechanism='SCRAM-SHA-256')
+		DBConn = client[mongoDBdatabase]
+	except Exception as e:
+		print(f'Error connecting to mongoDB server\nError:\n{e.__class__}')
+	print('Successfully connected to data database')
 @app.on_event("shutdown")
 async def shutdown():
 	await user_database.disconnect()
+	await client.close()
 
 # ----------CORS-----------
 # where requests can originate from
@@ -45,22 +67,62 @@ app.add_middleware(
 	allow_headers=["*"],
 )
 
-@app.get("/orderbook/", status_code=201)
-async def getOrderbookHisotryUsingDateTime(
-		startTime: Optional[datetime.datetime] = Query(datetime.datetime.now().replace(tzinfo=datetime.timezone.utc),title='', example="2019-04-01T00:00:00.000Z", description="ISO 8601 formatted data period start"), # timestamp constrained to jan1,2022 and right now
-		endTime: Optional[datetime.datetime]  = Query(datetime.datetime.now().replace(tzinfo=datetime.timezone.utc),title='Data request start', example="2019-04-01T00:00:00.000-05:00", description="ISO 8601 formatted data period end")):
+@app.get("/data/{security}", status_code=201)
+async def getOrderbookHisotryUsingDateTime( security: Security,
+		startTime: Optional[datetime.datetime] = Query(datetime.datetime.now().replace(tzinfo=datetime.timezone.utc),
+														title='Start date/time of period for request data ', 
+														example="2019-04-01T00:00:00.000Z", 
+														description="ISO 8601 formatted data period start"), # timestamp constrained to jan1,2022 and right now
+		endTime: Optional[datetime.datetime]  = Query(datetime.datetime.now().replace(tzinfo=datetime.timezone.utc),
+														title='End date/time of period for requested data', 
+														example="2019-04-01T00:00:00.000-05:00", 
+														description="ISO 8601 formatted data period end")):
+	orderbookDBconnection = DBConn['orderbook&trades']
+	orderbookDBconnection.find({ "$and": [
+								{"symbol":{"$eq":security.value}} , 
+								{"DateTime":{
+									"$gte": startTime, 
+									"$lte": endTime
+									}}
+								]}); 
 	return {"startTime": startTime, 'endTime': endTime}
 
 # we can alsio do orderbook using date time (ISO 8601)
-@app.get("/orderbook/{timeDelta}", status_code=201)
-async def getOrderbookHisotryUsingDateTime(timeDelta: Optional[datetime.timedelta] = Query(..., title="time delta from now", decscription="How long from now into the past in seconds to get data")):
-	return {'startTime':datetime.datetime.now() - timeDelta, 'endTime': datetime.datetime.now()}
+@app.get("/data/{security}/{timeDelta}", status_code=201)
+async def getOrderbookHisotryUsingDateTime( security: Security,
+											timeDelta: Optional[datetime.timedelta] = Query(..., 
+																							title="Data period time delta",
+																							decscription=" Length of period (in seconds), relative to right now, for requested data")):
+	orderbookDBconnection = DBConn['orderbook&trades']
+	orderbookDBconnection.find({ "$and": [
+								{"symbol":{"$eq":security.value}} , 
+								{"DateTime":{
+									"$gte": datetime.datetime.now().replace(tzinfo=datetime.timezone.utc)- datetime.timedelta(seconds=timeDelta) , 
+									"$lte": datetime.datetime.now().replace(tzinfo=datetime.timezone.utc)
+									}}
+								]}) 
+	return {'startTime':datetime.datetime.now() - datetime.timedelta(seconds=timeDelta), 'endTime': datetime.datetime.now()}
 
 
-@app.get("/orders/",  status_code=201)
-async def getOrderHistory(
-		startTime: int = Query(int(time.time()) - 2880, title='Period start', description='Start Unix timestamp for orderbook data, defaults to 48 hours ago, must be between jan 1st 2022 and now', gt=1641013200, le=int(time.time()) ), # timestamp constrained to jan1,2022 and right now
-		endTime: Optional[int] = Query(int(time.time()), title='Period end', description='End Unix timestamp for  orderbook data, defaults to now, must be between jan 1st 2022 and now', gt=1641013200, le=int(time.time()))):#  if we decide to use string we can use:  min_length=9, max_length=11
+@app.get("/data/{security}",  status_code=201)
+async def getOrderHistory( security: Security,
+		startTime: int = Query(int(time.time()) - 2880, 
+								title='Period start', 
+								description='Start Unix timestamp for orderbook data, defaults to 48 hours ago, must be between jan 1st 2022 and now', 
+								gt=1641013200, le=int(time.time()) ), # timestamp constrained between jan1,2022 and right now
+		endTime: Optional[int] = Query(int(time.time()), 
+										title='Period end', 
+										description='End Unix timestamp for  orderbook data, defaults to now, must be between jan 1st 2022 and now', 
+										gt=1641013200, le=int(time.time()))):#  if we decide to use string we can use:  min_length=9, max_length=11
+	orderbookDBconnection = DBConn['orderbook&trades']
+	orderbookDBconnection.find({ "$and": [
+								{"symbol":{"$eq":security.value}} , 
+								{"DateTime":{
+									"$gte": startTime, 
+									"$lte": endTime
+									}}
+								]},
+								{}) 
 	return {"startTime": startTime, 'endTime': endTime}
 
 
@@ -295,4 +357,6 @@ async def register(registerCredentials: Register): #,  auth: str = Cookie(None),
 	return {"Success":True, 'Credentials': credentials}
 
 if __name__ == "__main__":
+	# run using : uvicorn main:app --reload
+	# autocreates documentation : http://127.0.0.1:8000/docs or http://127.0.0.1:8000/redoc the generated OpenAPI fgenerated schema: http://127.0.0.1:8000/openapi.json
 	uvicorn.run(app, host="0.0.0.0", port=8000)

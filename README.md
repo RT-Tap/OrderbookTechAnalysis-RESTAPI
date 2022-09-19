@@ -4,6 +4,15 @@ This is the REST API component/submodule of the [Orderbook Technical Analysis pr
 
 As described below, the JWT implementation used here is attack resistant and although the rest of the repo may be of no use to you I think my JWT implementation may be of great value to some.  Overkill for this application but nice for refrence.
 
+# API documentation:
+Can be viewed by accessing `/docs` or `/redoc` of conatiner/machine this container runs on.  
+So if testing, not in a container and environment variable FQDOMAIN not set:
+-    http://127.0.0.1:8000/redoc  
+-    http://127.0.0.1:8000/docs  
+If you set the env var FQDOMAIN then:  
+-    http://FFQDOMAIN/docs
+-    http://FFQDOMAIN/redoc  
+
 ## Enviroment Variables need to run
 - MYSQL_USER: mysql user name for users database
 - MYSQL_PASSWORD: mysql user password for users database
@@ -11,6 +20,10 @@ As described below, the JWT implementation used here is attack resistant and alt
 - WORKER_PASSWORD: Mongodb user password
 - FQDOMAIN: Domain this project is using, used for CORS policy and JWT signing  (defaults to 127.0.0.1:8000)
 - SECRET_KEY: random 32 long string used for JWT signing/encryption - can be generated using:  `openssl rand -hex 32`
+- MONGODB_ENDPOINT: ip address/container name of mongoDB database that contains the financial data
+- MONGODB_DATABASE: the name of the database that stores the financial data (defaults to `orderbook&trades`)
+- WORKER_USERNAME: the database user name that has read access to financial data 
+- WORKER_PASSWORD: password of the database user
 
 ## Attack resistant JWT 
 The implementation of JWTs used here is resistant to the 2 attack vectors they are vulnerable to, XSS and CSRF. 

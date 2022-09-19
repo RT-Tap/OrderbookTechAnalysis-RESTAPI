@@ -4,3 +4,4 @@ uvicorn[standard]
 python-jose[cryptography]
 passlib[bcrypt]
 databases[mysql]
+pymongo
